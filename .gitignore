@@ -1,0 +1,14 @@
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Runtime data: user accounts, password hashes, sessions, tickets, photos
+.data/
+
+# Old source snapshots (previously served publicly from public/assets)
+archive/
