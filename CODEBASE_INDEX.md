@@ -6,6 +6,14 @@ Snapshot of the repository as received (2026-10-23), mapped against the upgrade 
 
 Fixed: defects 1–9, 11–14, 17, 24, 25, 28, plus two found during the work: the Vite dev server (which `npm start` used to run) served `.data/users.json` and server source over HTTP, and `dotenv` loaded after the stores read their env vars. Partially fixed: 10 (type/size validated server-side; photos still stored inline in JSON). Still open: 8 (login rate limiting), 15–16, 18–23, 26–27, 29, and all spec features from §3 onward. Baseline before changes: 64/64 tests, lint and build clean. After: 125/125 tests (new `securityAndHonesty.test.ts`), lint and build clean. Gemini tested with mocked clients only; no real API call has been made.
 
+## Phase 2 status (full feature specification) — 2026-10-23
+
+Implemented: student profiles (§2), Gemini intake with Other/title, Hindi/Hinglish, draft clarifications, strict output validation (§3), complaint review/idempotent submission (§4), two-step emergency + truthful alert states (§5), responder role and view (§6), staff filters/sort/assignment to real accounts (§7), admin configuration + audit (§8), priority engine (§9), 10-in-2h clustering (§10), repeat offenders (§11), classroom readiness (§12), proof of fix (§13), ETA/blockers (§14), workarounds (§15), shared incidents (§16), Campus Pulse (§17), Campus X-Ray list (§18), waste detector (§19), a11y basics (§20), notifications + scheduler (§22).
+Bugs found and fixed during phase 2: responders could list all maintenance tickets; keyword fallback matched "ap" inside "tap"/"laptop"; unreadable data files were silently replaced by empty stores; hard-coded fictional technician names and building list; invented "Ext. 4444" emergency number.
+Tests: 251 passing across 4 suites (all Gemini and notification tests mocked). Remaining blockers: see README §8.
+
+New server modules: `configStore`, `auditStore`, `jsonFile`, `priorityEngine`, `notificationService`, `emergencyService`, `incidentService`, `insightsService`, `pulseService`, `evidenceStore`, `scheduler`, `textSimilarity`, `featureRoutes`.
+
 The sections below describe the code **as received**.
 
 ## 1. Stack & scripts

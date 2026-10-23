@@ -4,6 +4,7 @@ import { Footer } from './components/common/Footer.js';
 import { StudentPortal } from './components/student/StudentPortal.js';
 import { StaffDashboard } from './components/staff/StaffDashboard.js';
 import { AdminConsole } from './components/admin/AdminConsole.js';
+import { ResponderDashboard } from './components/responder/ResponderDashboard.js';
 import { DemoWalkthroughModal } from './components/demo/DemoWalkthroughModal.js';
 import { AuthModal } from './components/auth/AuthModal.js';
 import { AuthProvider, useAuth } from './context/AuthContext.js';
@@ -24,7 +25,7 @@ function AppContent() {
   useEffect(() => {
     apiClient.checkHealth()
       .then((data) => {
-        setServerHealth({ gemini: data.gemini, demoMode: Boolean(data.demoMode) });
+        setServerHealth({ gemini: data.gemini, demoMode: Boolean(data.demoMode), emergencyContact: data.emergencyContact ?? null });
       })
       .catch((err) => {
         console.warn('[App] Health check failed:', err);
@@ -38,6 +39,10 @@ function AppContent() {
       setCurrentView('staff');
     } else if (user?.role === 'admin' && currentView === 'student') {
       setCurrentView('admin');
+    } else if (user?.role === 'responder' && currentView !== 'responder') {
+      setCurrentView('responder');
+    } else if (!user && (currentView === 'responder' || currentView === 'admin' || currentView === 'staff')) {
+      setCurrentView('student');
     }
   }, [user]);
 
@@ -96,10 +101,12 @@ function AppContent() {
         {currentView === 'admin' && (
           <AdminConsole />
         )}
+
+        {currentView === 'responder' && <ResponderDashboard />}
       </main>
 
       {/* Footer */}
-      <Footer />
+      <Footer emergencyContact={serverHealth?.emergencyContact} />
 
       {/* Authentication Modal */}
       <AuthModal

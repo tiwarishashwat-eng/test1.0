@@ -3,7 +3,6 @@
  * Date formatters, search helpers, and department tech presets
  */
 
-import { Department } from '../../shared/types.js';
 
 export function formatRelativeTime(dateString: string): string {
   try {
@@ -48,28 +47,3 @@ export function formatFullDateTime(dateString: string): string {
   }
 }
 
-/**
- * Suggested certified technician presets per department for quick staff dispatch
- */
-export const DEPARTMENT_TECHNICIANS: Record<Department, string[]> = {
-  'Plumbing Maintenance Department': [
-    'Carlos Rivera (Master Plumber)',
-    'Samira Khan (Plumbing Tech II)',
-    'Duty Emergency Plumber'
-  ],
-  'Electrical Systems & Safety Division': [
-    'Marcus Vance (Senior Electrician)',
-    'Jason Brody (High-Voltage Tech)',
-    'Duty Electrician Dispatch'
-  ],
-  'Campus Custodial & Sanitation Services': [
-    'Elena Gomez (Custodial Lead)',
-    'Devante Washington (Sanitation Specialist)',
-    'Floor Care Response Team'
-  ],
-  'IT & Network Infrastructure Team': [
-    'Maya Lin (NOC Wireless Engineer)',
-    'Kevin Zhao (Network Ops)',
-    'Campus Helpdesk Tech'
-  ]
-};

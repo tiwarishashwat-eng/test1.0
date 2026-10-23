@@ -7,7 +7,8 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
-import { Department, User, UserRole } from '../shared/types.js';
+import { Department, ResponderType, StaffRole, StudentProfile, User, UserRole, USER_ROLES } from '../shared/types.js';
+import { isValidPhone, validateProfileInput } from '../shared/validation.js';
 
 /** Data directory, resolved when a store is constructed so tests can point at a temp dir. */
 export function resolveDataDir(): string {
@@ -17,7 +18,7 @@ export function resolveDataDir(): string {
 // Records created before this field existed were hashed with 10k iterations
 const LEGACY_PBKDF2_ITERATIONS = 10000;
 const PBKDF2_ITERATIONS = 210000;
-const VALID_ROLES: readonly UserRole[] = ['student', 'staff', 'admin'];
+const VALID_ROLES: readonly UserRole[] = USER_ROLES;
 
 export const isDemoSeedEnabled = () => process.env.CAMPUSCONNECT_DEMO_SEED === 'true';
 
@@ -25,6 +26,7 @@ interface StoredUserRecord extends User {
   passwordHash: string;
   salt: string;
   hashIterations?: number;
+  profile?: StudentProfile;
 }
 
 interface StoredSession {
@@ -150,7 +152,11 @@ export class UserStore {
         return;
       }
     } catch (err) {
-      console.warn('[UserStore] Error loading users from disk:', err);
+      // Never overwrite an accounts file we failed to read
+      if (fs.existsSync(this.usersFile)) {
+        throw new Error(`[UserStore] ${this.usersFile} exists but could not be read. Fix or move it before starting. ${err}`);
+      }
+      console.warn('[UserStore] Error initialising user storage:', err);
     }
 
     if (isDemoSeedEnabled()) {
@@ -186,6 +192,7 @@ export class UserStore {
       password: string;
       role: UserRole;
       department?: Department;
+      responderType?: ResponderType;
     }> = [
       {
         id: 'user-admin-1',
@@ -247,6 +254,22 @@ export class UserStore {
         email: 'priya.patel@campus.edu',
         password: 'StudentPass2026!',
         role: 'student'
+      },
+      {
+        id: 'user-responder-1',
+        name: 'Demo Medical Responder',
+        email: 'medical.desk@campus.edu',
+        password: 'ResponderPass2026!',
+        role: 'responder',
+        responderType: 'medical'
+      },
+      {
+        id: 'user-responder-2',
+        name: 'Demo Security Responder',
+        email: 'security.desk@campus.edu',
+        password: 'ResponderPass2026!',
+        role: 'responder',
+        responderType: 'security'
       }
     ];
 
@@ -259,6 +282,7 @@ export class UserStore {
         salt: '',
         role: acc.role,
         department: acc.department,
+        responderType: acc.responderType,
         isActive: true,
         createdAt: new Date().toISOString()
       };
@@ -358,8 +382,10 @@ export class UserStore {
     name: string;
     email: string;
     password: string;
-    department: Department;
-    role: 'staff' | 'admin';
+    department?: Department;
+    role: StaffRole;
+    responderType?: ResponderType;
+    phone?: string;
   }): User {
     const cleanEmail = params.email.trim().toLowerCase();
     if (this.emailIndex.has(cleanEmail)) {
@@ -375,7 +401,9 @@ export class UserStore {
       passwordHash: '',
       salt: '',
       role: params.role,
-      department: params.department,
+      department: params.role === 'responder' ? undefined : params.department,
+      responderType: params.role === 'responder' ? params.responderType : undefined,
+      phone: params.phone?.trim() || undefined,
       isActive: true,
       createdAt: new Date().toISOString()
     };
@@ -388,6 +416,51 @@ export class UserStore {
     return this.toPublicUser(record);
   }
 
+  // --------------------------------------------------------------------------
+  // Student profiles (always keyed by the authenticated account id)
+  // --------------------------------------------------------------------------
+
+  public getProfile(userId: string): StudentProfile | null {
+    const record = this.users.get(userId);
+    if (!record || record.role !== 'student') return null;
+    return record.profile ?? null;
+  }
+
+  /**
+   * Validates and saves a student's profile. Partial profiles are allowed so a student
+   * can save progress; well-formedness of every provided field is enforced.
+   */
+  public saveProfile(
+    userId: string,
+    input: Record<string, unknown>
+  ): { profile?: StudentProfile; errors?: Partial<Record<keyof StudentProfile, string>>; status: number } {
+    const record = this.users.get(userId);
+    if (!record || record.role !== 'student') return { status: 404 };
+    const { errors, profile } = validateProfileInput(input);
+    if (Object.keys(errors).length > 0) return { errors, status: 400 };
+
+    profile.updatedAt = new Date().toISOString();
+    record.profile = profile;
+    // Keep the account display name and contact phone in sync with the profile
+    if (profile.fullName) record.name = profile.fullName;
+    record.phone = profile.phone || undefined;
+    this.persistToDisk();
+    return { profile, status: 200 };
+  }
+
+  /** Active responder accounts (for shift validation and alert targeting). */
+  public getActiveResponders(): User[] {
+    return Array.from(this.users.values())
+      .filter((u) => u.role === 'responder' && u.isActive)
+      .map((u) => this.toPublicUser(u));
+  }
+
+  public getActiveUsersByRole(role: UserRole, department?: Department): User[] {
+    return Array.from(this.users.values())
+      .filter((u) => u.role === role && u.isActive && (!department || u.department === department))
+      .map((u) => this.toPublicUser(u));
+  }
+
   /**
    * Updates a staff/admin account. Inputs must already be type-checked by the caller;
    * this enforces the business rules (no student targets, no self-demotion/suspension,
@@ -395,12 +468,19 @@ export class UserStore {
    */
   public updateStaffMember(
     id: string,
-    updates: { department?: Department; isActive?: boolean; role?: 'staff' | 'admin' },
+    updates: { department?: Department; isActive?: boolean; role?: StaffRole; responderType?: ResponderType; phone?: string },
     actor: User
   ): { user?: User; error?: string; status: number } {
     const record = this.users.get(id);
-    if (!record || (record.role !== 'staff' && record.role !== 'admin')) {
+    if (!record || record.role === 'student') {
       return { error: 'Staff member not found', status: 404 };
+    }
+    if (updates.phone !== undefined && updates.phone !== '' && !isValidPhone(updates.phone)) {
+      return { error: 'Invalid phone number', status: 400 };
+    }
+    const resultingRole = updates.role ?? record.role;
+    if (resultingRole === 'responder' && !(updates.responderType ?? record.responderType)) {
+      return { error: 'Responder accounts need a responder type (medical or security)', status: 400 };
     }
     if (updates.role !== undefined && !VALID_ROLES.includes(updates.role)) {
       return { error: 'Invalid role', status: 400 };
@@ -431,6 +511,9 @@ export class UserStore {
     if (updates.department !== undefined) record.department = updates.department;
     if (updates.isActive !== undefined) record.isActive = updates.isActive;
     if (updates.role !== undefined) record.role = updates.role;
+    if (updates.responderType !== undefined) record.responderType = updates.responderType;
+    if (updates.phone !== undefined) record.phone = updates.phone.trim() || undefined;
+    if (record.role !== 'responder') record.responderType = undefined;
 
     // Suspension or role change revokes existing sessions so the change takes effect immediately
     if (updates.isActive === false || roleChanged) {
@@ -445,8 +528,8 @@ export class UserStore {
 
   public getAllStaff(): User[] {
     return Array.from(this.users.values())
-      .filter((u) => u.role === 'staff' || u.role === 'admin')
-      .map(this.toPublicUser);
+      .filter((u) => u.role !== 'student')
+      .map((u) => this.toPublicUser(u));
   }
 
   public getUserById(id: string): User | null {
@@ -461,6 +544,8 @@ export class UserStore {
       email: record.email,
       role: record.role,
       department: record.department,
+      responderType: record.responderType,
+      phone: record.phone,
       isActive: record.isActive,
       createdAt: record.createdAt
     };

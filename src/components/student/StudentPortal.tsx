@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Wrench,
   Zap,
@@ -15,20 +15,31 @@ import {
   MessageSquare,
   Inbox,
   Lock,
-  PlusCircle
+  PlusCircle,
+  AlertOctagon,
+  UserCircle,
+  Activity,
+  HelpCircle
 } from 'lucide-react';
 import { ComplaintForm } from './ComplaintForm.js';
 import { TicketConfirmation } from './TicketConfirmation.js';
 import { TicketTracker } from './TicketTracker.js';
 import { MyComplaintsList } from './MyComplaintsList.js';
+import { ProfilePage } from './ProfilePage.js';
+import { EmergencyFlow } from './EmergencyFlow.js';
+import { CampusPulse } from './CampusPulse.js';
+import { apiClient } from '../../services/apiClient.js';
+import { PROFILE_FIELD_LABELS } from '../../shared/validation.js';
 import { Ticket, TicketCategory } from '../../shared/types.js';
 import { useAuth } from '../../context/AuthContext.js';
+
+type PortalTab = 'report' | 'track' | 'my-complaints' | 'profile' | 'pulse';
 
 interface StudentPortalProps {
   onNavigateToStaff: () => void;
   onOpenAuthModal: (mode?: 'student-login' | 'staff-login' | 'register') => void;
   onOpenDemoGuide: () => void;
-  initialMode?: 'report' | 'track' | 'my-complaints';
+  initialMode?: PortalTab;
   initialTicketId?: string;
 }
 
@@ -40,7 +51,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   initialTicketId = ''
 }) => {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<'report' | 'track' | 'my-complaints'>(
+  const [activeTab, setActiveTab] = useState<PortalTab>(
     user ? (initialMode || 'my-complaints') : 'report'
   );
   const [submittedTicket, setSubmittedTicket] = useState<Ticket | null>(null);
@@ -49,7 +60,23 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
     building?: string;
     location?: string;
     description?: string;
+    category?: TicketCategory;
   } | undefined>(undefined);
+  const [emergencyOpen, setEmergencyOpen] = useState(false);
+  const [missingProfile, setMissingProfile] = useState<string[]>([]);
+  const isStudent = user?.role === 'student';
+
+  // First-time setup: prompt (never force) the student to complete their profile
+  useEffect(() => {
+    if (!isStudent) {
+      setMissingProfile([]);
+      return;
+    }
+    apiClient
+      .getProfile()
+      .then((res) => setMissingProfile(res.missingFields.map((f) => PROFILE_FIELD_LABELS[f])))
+      .catch(() => setMissingProfile([]));
+  }, [user?.id, activeTab]);
 
   const handleComplaintSubmitted = (ticket: Ticket) => {
     setSubmittedTicket(ticket);
@@ -68,37 +95,11 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
   };
 
   const handleCategoryCardClick = (cat: TicketCategory) => {
-    const examples: Record<TicketCategory, { b: string; l: string; d: string }> = {
-      'Plumbing': {
-        b: 'Science & Engineering Complex',
-        l: '2nd Floor Restroom',
-        d: 'Sink faucet is loose and leaking cold water continuously onto the floor.'
-      },
-      'Electricity': {
-        b: 'Main Academic Quad',
-        l: 'Lecture Hall 101, Row 4',
-        d: 'Power outlet under the desk row has no power and breaker seems tripped.'
-      },
-      'Cleanliness': {
-        b: 'Student Union Center',
-        l: 'Food Court Stairwell',
-        d: 'Large soda spill on the steps and recycling receptacle is overflowing.'
-      },
-      'Internet Connectivity': {
-        b: 'University Memorial Library',
-        l: '3rd Floor Quiet Study Wing',
-        d: 'eduroam wireless keeps disconnecting every few minutes for multiple laptops.'
-      }
-    };
-
-    setPrefillScenario({
-      building: examples[cat].b,
-      location: examples[cat].l,
-      description: examples[cat].d
-    });
+    setPrefillScenario({ category: cat });
     setSubmittedTicket(null);
     setActiveTab('report');
   };
+
 
   return (
     <div className="space-y-8 pb-12">
@@ -113,12 +114,25 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           </div>
 
           <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white max-w-3xl mx-auto leading-tight">
-            Fixing Campus Facilities with <span className="bg-gradient-to-r from-blue-400 to-sky-300 bg-clip-text text-transparent">AI-Assisted Triage</span>
+            Report campus issues. <span className="bg-gradient-to-r from-blue-400 to-sky-300 bg-clip-text text-transparent">Track every fix.</span>
           </h1>
 
           <p className="text-xs sm:text-sm text-slate-300 max-w-2xl mx-auto leading-relaxed">
-            Report maintenance issues in natural words. CampusConnect automatically categorizes, asks clarifying questions, assigns certified campus personnel, and keeps you updated.
+            Report maintenance issues in your own words. Facilities staff review every report, route it to the right team, and post updates you can track.
           </p>
+
+          {isStudent && (
+            <div className="pt-1">
+              <button
+                onClick={() => setEmergencyOpen(true)}
+                className="inline-flex items-center gap-2 px-6 py-3 rounded-2xl bg-rose-600 hover:bg-rose-700 text-white text-base font-black shadow-lg shadow-rose-900/40 ring-4 ring-rose-400/40 focus-visible:ring-white cursor-pointer"
+                aria-haspopup="dialog"
+              >
+                <AlertOctagon size={22} /> Emergency
+              </button>
+              <p className="text-[11px] text-rose-200 mt-1">For medical or security emergencies. In immediate danger, also call emergency services directly.</p>
+            </div>
+          )}
 
           {/* Mode Switcher */}
           <div className="flex flex-wrap items-center justify-center gap-2.5 pt-2">
@@ -169,6 +183,34 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
               <span>Track Ticket</span>
             </button>
 
+            {isStudent && (
+              <button
+                onClick={() => {
+                  setSubmittedTicket(null);
+                  setActiveTab('profile');
+                }}
+                className={`px-4 py-2 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer shadow-md flex items-center gap-1.5 ${
+                  activeTab === 'profile' ? 'bg-blue-600 text-white ring-2 ring-blue-400' : 'bg-white/10 hover:bg-white/15 text-slate-200'
+                }`}
+              >
+                <UserCircle size={15} />
+                <span>Profile</span>
+              </button>
+            )}
+
+            <button
+              onClick={() => {
+                setSubmittedTicket(null);
+                setActiveTab('pulse');
+              }}
+              className={`px-4 py-2 rounded-xl font-bold text-xs sm:text-sm transition-all cursor-pointer shadow-md flex items-center gap-1.5 ${
+                activeTab === 'pulse' ? 'bg-blue-600 text-white ring-2 ring-blue-400' : 'bg-white/10 hover:bg-white/15 text-slate-200'
+              }`}
+            >
+              <Activity size={15} />
+              <span>Campus Pulse</span>
+            </button>
+
             {!user && (
               <button
                 onClick={() => onOpenAuthModal('student-login')}
@@ -186,16 +228,17 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           <div className="max-w-5xl mx-auto">
             <div className="text-center mb-2.5">
               <span className="text-[10px] uppercase font-bold tracking-wider text-slate-400">
-                Click a category below to test a sample scenario:
+                Choose a category to start a report:
               </span>
             </div>
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
               {[
                 { cat: 'Plumbing' as TicketCategory, icon: Wrench, color: 'text-blue-400', border: 'hover:border-blue-500/40', desc: 'Leaks, faucets, drains, toilets' },
                 { cat: 'Electricity' as TicketCategory, icon: Zap, color: 'text-amber-400', border: 'hover:border-amber-500/40', desc: 'Outlets, sparks, lights, breakers' },
                 { cat: 'Cleanliness' as TicketCategory, icon: Sparkles, color: 'text-emerald-400', border: 'hover:border-emerald-500/40', desc: 'Spills, trash, sanitation, odors' },
                 { cat: 'Internet Connectivity' as TicketCategory, icon: Wifi, color: 'text-indigo-400', border: 'hover:border-indigo-500/40', desc: 'Wi-Fi drops, APs, ethernet, slow LAN' },
+                { cat: 'Other' as TicketCategory, icon: HelpCircle, color: 'text-slate-300', border: 'hover:border-slate-400/40', desc: 'Anything else — add a short title' },
               ].map(({ cat, icon: Icon, color, border, desc }) => (
                 <button
                   key={cat}
@@ -219,13 +262,23 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
       </div>
 
       {/* Main Body */}
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-4">
+        {isStudent && missingProfile.length > 0 && activeTab !== 'profile' && (
+          <div className="max-w-3xl mx-auto p-3 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex flex-wrap items-center justify-between gap-2">
+            <span>Complete your profile so emergency alerts include your details (missing: {missingProfile.join(', ')}).</span>
+            <button onClick={() => setActiveTab('profile')} className="font-bold underline cursor-pointer">Complete profile</button>
+          </div>
+        )}
         {submittedTicket ? (
           <TicketConfirmation
             ticket={submittedTicket}
             onTrackTicket={handleTrackTicket}
             onNewComplaint={handleStartNewComplaint}
           />
+        ) : activeTab === 'profile' && isStudent ? (
+          <ProfilePage />
+        ) : activeTab === 'pulse' ? (
+          <CampusPulse />
         ) : activeTab === 'my-complaints' && user ? (
           <MyComplaintsList
             onSelectTicket={handleTrackTicket}
@@ -237,6 +290,7 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
             onNavigateToTrack={handleTrackTicket}
             onRequireSignIn={() => onOpenAuthModal('student-login')}
             prefillData={prefillScenario}
+            key={prefillScenario?.category ?? 'blank'}
           />
         ) : (
           <TicketTracker
@@ -246,6 +300,8 @@ export const StudentPortal: React.FC<StudentPortalProps> = ({
           />
         )}
       </div>
+
+      <EmergencyFlow open={emergencyOpen} onClose={() => setEmergencyOpen(false)} />
     </div>
   );
 };

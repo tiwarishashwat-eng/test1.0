@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Sparkles,
   Upload,
@@ -37,19 +37,12 @@ interface ComplaintFormProps {
     building?: string;
     location?: string;
     description?: string;
+    category?: TicketCategory;
+    campus?: string;
+    floor?: string;
   };
 }
 
-const COMMON_CAMPUS_BUILDINGS = [
-  'Science & Engineering Complex',
-  'Main Academic Quad',
-  'Student Union Center',
-  'University Memorial Library',
-  'North Residential Hall',
-  'South Quad Dorms',
-  'Athletic & Recreation Pavilion',
-  'Fine Arts & Design Building'
-];
 
 export const ComplaintForm: React.FC<ComplaintFormProps> = ({
   onSuccess,
@@ -63,8 +56,36 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
   const [building, setBuilding] = useState(prefillData?.building || '');
   const [location, setLocation] = useState(prefillData?.location || '');
   const [description, setDescription] = useState(prefillData?.description || '');
-  const [selectedCategory, setSelectedCategory] = useState<TicketCategory>('Plumbing');
+  const [selectedCategory, setSelectedCategory] = useState<TicketCategory>(prefillData?.category || 'Plumbing');
   const [categorySource, setCategorySource] = useState<'student' | 'ai_suggested'>('student');
+  const [problemTitle, setProblemTitle] = useState('');
+  const [campus, setCampus] = useState(prefillData?.campus || '');
+  const [floor, setFloor] = useState(prefillData?.floor || '');
+  const [safetyRisk, setSafetyRisk] = useState(false);
+  const [accessibilityImpact, setAccessibilityImpact] = useState(false);
+  const [peopleAffected, setPeopleAffected] = useState(1);
+  const [assetId, setAssetId] = useState('');
+  const [campusAssets, setCampusAssets] = useState<{ id: string; name: string; building: string }[]>([]);
+  const [campusBuildings, setCampusBuildings] = useState<string[]>([]);
+  const [isReviewing, setIsReviewing] = useState(false);
+  // Idempotency key: a retried submit of this draft never creates a second ticket
+  const [clientSubmissionId] = useState(() => (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : `sub-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`));
+  // Answers already folded into the draft by an earlier re-analysis (question -> answer)
+  const [answeredSoFar, setAnsweredSoFar] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!user) return;
+    apiClient
+      .getCampus()
+      .then((c) => {
+        setCampusAssets(c.assets);
+        setCampusBuildings(c.buildings.map((b) => b.name));
+      })
+      .catch(() => {
+        setCampusAssets([]);
+        setCampusBuildings([]);
+      });
+  }, [user]);
 
   // Image upload
   const [imageBase64, setImageBase64] = useState<string | null>(null);
@@ -138,19 +159,27 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
     setAnalysisError(null);
 
     try {
+      // Re-analysis of the same draft: include answers so far and reuse the draft id
+      const clarifications = collectAnswers();
       const response = await apiClient.analyzeComplaint({
         description: description.trim(),
         building: building.trim() || undefined,
         location: location.trim() || undefined,
         imageBase64: imageBase64 || undefined,
-        mimeType: imageMimeType || undefined
+        mimeType: imageMimeType || undefined,
+        analysisId: analysisId || undefined,
+        clarifications: Object.keys(clarifications).length > 0 ? clarifications : undefined
       });
+      setAnsweredSoFar(clarifications);
 
       if (response.success && response.analysis) {
         setAiAnalysis(response.analysis);
         setAnalysisId(response.analysisId);
         setSelectedCategory(response.analysis.suggestedCategory);
         setCategorySource('ai_suggested');
+        if (response.analysis.suggestedCategory === 'Other' && response.analysis.suggestedTitle && !problemTitle.trim()) {
+          setProblemTitle(response.analysis.suggestedTitle);
+        }
         setDuplicateCandidates(response.duplicateCandidates || []);
         setSimilarReportsByOthers(response.similarReportsByOthers || 0);
 
@@ -175,6 +204,16 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
     setFollowUpAnswers(prev => ({ ...prev, [key]: val }));
   };
 
+  /** Earlier answers plus answers to the currently shown questions. */
+  const collectAnswers = (): Record<string, string> => {
+    const merged: Record<string, string> = { ...answeredSoFar };
+    aiAnalysis?.followUpQuestions.forEach((q, idx) => {
+      const ans = followUpAnswers[`q_${idx}`]?.trim();
+      if (ans) merged[q] = ans;
+    });
+    return merged;
+  };
+
   // Submit Complaint
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -195,43 +234,44 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
       return;
     }
 
+    if (selectedCategory === 'Other' && problemTitle.trim().length < 3) {
+      setSubmitError('Please enter a short problem title for the "Other" category.');
+      return;
+    }
+
     if (!user) {
       setSubmitError('Please sign in to submit your complaint. Your draft will be kept.');
+      return;
+    }
+
+    // Step 1: review the details before sending
+    if (!isReviewing) {
+      setIsReviewing(true);
       return;
     }
 
     setIsSubmitting(true);
 
     try {
-      // Append follow-up answers into description if provided
-      let finalDescription = description.trim();
-      const answeredList: Record<string, string> = {};
-
-      if (aiAnalysis && aiAnalysis.followUpQuestions.length > 0) {
-        const addedNotes: string[] = [];
-        aiAnalysis.followUpQuestions.forEach((q, idx) => {
-          const ans = followUpAnswers[`q_${idx}`]?.trim();
-          if (ans) {
-            addedNotes.push(`Q: ${q}\nA: ${ans}`);
-            answeredList[q] = ans;
-          }
-        });
-
-        if (addedNotes.length > 0) {
-          finalDescription += `\n\n[Clarification Details Provided by Student]:\n${addedNotes.join('\n')}`;
-        }
-      }
+      // The original description is kept as written; clarifications travel separately
+      const answeredList = collectAnswers();
 
       const res = await apiClient.submitComplaint({
-        description: finalDescription,
+        description: description.trim(),
         building: building.trim(),
         location: location.trim(),
+        campus: campus.trim() || undefined,
+        floor: floor.trim() || undefined,
+        problemTitle: problemTitle.trim() || undefined,
         category: selectedCategory,
         categorySource,
         imageBase64: imageBase64 || undefined,
         mimeType: imageMimeType || undefined,
         analysisId: analysisId || undefined,
-        studentFollowUpAnswers: Object.keys(answeredList).length > 0 ? answeredList : undefined
+        studentFollowUpAnswers: Object.keys(answeredList).length > 0 ? answeredList : undefined,
+        impact: { safetyRisk, accessibilityImpact, peopleAffected, criticalServiceDisruption: false, alternativesAvailable: 'unknown' },
+        assetId: assetId || undefined,
+        clientSubmissionId
       });
 
       if (res.success && res.ticket) {
@@ -265,7 +305,7 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
       <form onSubmit={handleSubmit} className="p-6 sm:p-8 space-y-6">
         {/* Error message */}
         {submitError && (
-          <div className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-start gap-3">
+          <div role="alert" className="p-4 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-sm flex items-start gap-3">
             <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
             <div>
               <p className="font-semibold">Submission Incomplete</p>
@@ -283,11 +323,13 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Campus Building <span className="text-rose-500">*</span>
+              <label htmlFor="cf-building" className="block text-xs font-semibold text-slate-700 mb-1">
+                Building / Block <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <div className="relative">
                 <input
+                  id="cf-building"
+                  aria-required="true"
                   type="text"
                   list="campus-buildings"
                   value={building}
@@ -297,7 +339,7 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
                   className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-slate-800 bg-slate-50/50"
                 />
                 <datalist id="campus-buildings">
-                  {COMMON_CAMPUS_BUILDINGS.map((b) => (
+                  {campusBuildings.map((b) => (
                     <option key={b} value={b} />
                   ))}
                 </datalist>
@@ -305,17 +347,30 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                Room Number, Floor, or Area <span className="text-rose-500">*</span>
+              <label htmlFor="cf-location" className="block text-xs font-semibold text-slate-700 mb-1">
+                Room or Area <span className="text-rose-500" aria-hidden="true">*</span>
               </label>
               <input
+                id="cf-location"
+                aria-required="true"
                 type="text"
                 value={location}
                 onChange={(e) => setLocation(e.target.value)}
-                placeholder="e.g. Room 204 or 2nd Floor West Washroom"
+                placeholder="e.g. Room 204, west washroom, or near the main gate"
                 required
                 className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 text-slate-800 bg-slate-50/50"
               />
+            </div>
+
+            <div>
+              <label htmlFor="cf-campus" className="block text-xs font-semibold text-slate-700 mb-1">Campus / Site (optional)</label>
+              <input id="cf-campus" type="text" value={campus} onChange={(e) => setCampus(e.target.value)} maxLength={100}
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-800 bg-slate-50/50" />
+            </div>
+            <div>
+              <label htmlFor="cf-floor" className="block text-xs font-semibold text-slate-700 mb-1">Floor (optional)</label>
+              <input id="cf-floor" type="text" value={floor} onChange={(e) => setFloor(e.target.value)} maxLength={20} placeholder="e.g. 2 or Ground"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-800 bg-slate-50/50" />
             </div>
           </div>
         </div>
@@ -437,10 +492,11 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
                 <div className="space-y-2">
                   {aiAnalysis.followUpQuestions.map((q, idx) => (
                     <div key={idx} className="bg-white p-3 rounded-xl border border-indigo-100">
-                      <label className="block text-xs font-medium text-slate-800 mb-1.5">
+                      <label htmlFor={`cf-fu-${idx}`} className="block text-xs font-medium text-slate-800 mb-1.5">
                         {q}
                       </label>
                       <input
+                        id={`cf-fu-${idx}`}
                         type="text"
                         value={followUpAnswers[`q_${idx}`] || ''}
                         onChange={(e) => handleAnswerChange(`q_${idx}`, e.target.value)}
@@ -450,7 +506,19 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
                     </div>
                   ))}
                 </div>
+                <button
+                  type="button"
+                  onClick={handleAnalyzeWithAI}
+                  disabled={isAnalyzing}
+                  className="px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-indigo-300 text-indigo-800 hover:bg-indigo-50 cursor-pointer disabled:opacity-50"
+                >
+                  {isAnalyzing ? 'Updating…' : 'Update suggestions with my answers (same draft)'}
+                </button>
+                <p className="text-[11px] text-slate-500">Answers are saved with this complaint. Updating suggestions does not create a new ticket.</p>
               </div>
+            )}
+            {Object.keys(answeredSoFar).length > 0 && (
+              <p className="text-[11px] text-indigo-900">{Object.keys(answeredSoFar).length} earlier answer(s) are included in this draft.</p>
             )}
           </div>
         )}
@@ -503,14 +571,14 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
           </p>
         )}
 
-        {/* Section 5: Category Selection (Explicit 4 categories) */}
+        {/* Section 5: Category Selection */}
         <div className="space-y-2.5">
           <div className="flex items-center justify-between">
             <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
               3. Category Selection <span className="text-rose-500">*</span>
             </label>
             <span className="text-xs text-slate-400">
-              Exactly 4 supported campus categories
+              Choose "Other" if nothing fits
             </span>
           </div>
 
@@ -540,13 +608,59 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
             })}
           </div>
 
-          <p className="text-[11px] text-slate-400">
-            Selected department routing:{' '}
+          <p className="text-[11px] text-slate-500">
+            Usually handled by:{' '}
             <strong className="text-slate-700 font-medium">
               {CATEGORY_DEPARTMENT_ROUTING[selectedCategory]}
             </strong>
           </p>
+
+          {selectedCategory === 'Other' && (
+            <div>
+              <label htmlFor="cf-title" className="block text-xs font-semibold text-slate-700 mb-1">
+                Problem title <span className="text-rose-500" aria-hidden="true">*</span>
+              </label>
+              <input id="cf-title" aria-required="true" type="text" value={problemTitle} onChange={(e) => setProblemTitle(e.target.value)} maxLength={90}
+                placeholder="e.g. Broken window latch"
+                className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-sm text-slate-800" />
+              <p className="text-[11px] text-slate-500 mt-1">Shown to staff and in your ticket tracker.</p>
+            </div>
+          )}
         </div>
+
+        {/* Impact (used by the rules-based priority engine, never by AI) */}
+        <fieldset className="space-y-2 border border-slate-200 rounded-xl p-4">
+          <legend className="px-1 text-xs font-bold text-slate-500 uppercase tracking-wider">Impact (helps set priority)</legend>
+          <label className="flex items-center gap-2 text-xs text-slate-700">
+            <input type="checkbox" checked={safetyRisk} onChange={(e) => setSafetyRisk(e.target.checked)} />
+            This could hurt someone (e.g. exposed wires, sparks, water near power, slippery floor)
+          </label>
+          <label className="flex items-center gap-2 text-xs text-slate-700">
+            <input type="checkbox" checked={accessibilityImpact} onChange={(e) => setAccessibilityImpact(e.target.checked)} />
+            It blocks accessible access (lift, ramp, accessible restroom)
+          </label>
+          <label className="flex items-center gap-2 text-xs text-slate-700">
+            About how many people are affected?
+            <input type="number" min={1} max={10000} value={peopleAffected} onChange={(e) => setPeopleAffected(Math.max(1, Number(e.target.value) || 1))}
+              className="w-24 px-2 py-1 rounded-lg border border-slate-300" />
+          </label>
+          {campusAssets.filter((a) => !building || a.building.toLowerCase() === building.trim().toLowerCase()).length > 0 && (
+            <label className="flex flex-col gap-1 text-xs text-slate-700">
+              Equipment (if you know its tag)
+              <select value={assetId} onChange={(e) => setAssetId(e.target.value)} className="px-2 py-1.5 rounded-lg border border-slate-300 bg-white">
+                <option value="">Not sure / not equipment</option>
+                {campusAssets
+                  .filter((a) => !building || a.building.toLowerCase() === building.trim().toLowerCase())
+                  .map((a) => <option key={a.id} value={a.id}>{a.name} ({a.id})</option>)}
+              </select>
+            </label>
+          )}
+          {safetyRisk && (
+            <p className="text-xs font-semibold text-rose-800" role="note">
+              If anyone is in immediate danger, leave the area and call campus security or local emergency services now. This form is not monitored in real time.
+            </p>
+          )}
+        </fieldset>
 
         {/* Section 6: Optional Photo Upload */}
         <div className="space-y-2.5">
@@ -605,6 +719,19 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
           )}
         </div>
 
+        {/* Review before submitting */}
+        {isReviewing && (
+          <section aria-labelledby="cf-review-title" className="p-4 rounded-xl border-2 border-blue-300 bg-blue-50/60 text-xs space-y-1" tabIndex={-1} ref={(el) => el?.focus()}>
+            <h3 id="cf-review-title" className="text-sm font-bold text-blue-950">Review your complaint</h3>
+            <p><strong>Category:</strong> {selectedCategory}{selectedCategory === 'Other' && problemTitle ? ` — ${problemTitle}` : ''}{categorySource === 'ai_suggested' ? ' (suggested, you can change it)' : ''}</p>
+            <p><strong>Location:</strong> {[campus, building, floor && `Floor ${floor}`, location].filter(Boolean).join(', ')}</p>
+            <p><strong>Description:</strong> {description}</p>
+            {Object.keys(collectAnswers()).length > 0 && <p><strong>Your clarifications:</strong> {Object.values(collectAnswers()).join(' • ')}</p>}
+            <p><strong>Photo:</strong> {imageBase64 ? 'Attached' : 'None'} • <strong>Safety risk:</strong> {safetyRisk ? 'Yes' : 'No'} • <strong>People affected:</strong> {peopleAffected}</p>
+            <button type="button" onClick={() => setIsReviewing(false)} className="mt-1 underline font-semibold text-blue-800 cursor-pointer">Edit details</button>
+          </section>
+        )}
+
         {/* Submit Actions */}
         <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-4">
           {user ? (
@@ -637,7 +764,7 @@ export const ComplaintForm: React.FC<ComplaintFormProps> = ({
               </>
             ) : (
               <>
-                <span>Submit Maintenance Request</span>
+                <span>{isReviewing ? 'Confirm and Submit' : 'Review Complaint'}</span>
                 <ArrowRight size={16} />
               </>
             )}

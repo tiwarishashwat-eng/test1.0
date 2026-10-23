@@ -1,7 +1,8 @@
 import React from 'react';
 import { Building2, ShieldCheck, Wrench, Zap, Sparkles, Wifi, Lock } from 'lucide-react';
 
-export const Footer: React.FC = () => {
+/** emergencyContact comes from the server's CAMPUS_EMERGENCY_CONTACT setting; never invented. */
+export const Footer: React.FC<{ emergencyContact?: string | null }> = ({ emergencyContact }) => {
   return (
     <footer className="bg-slate-900 text-slate-400 text-xs border-t border-slate-800 mt-16" role="contentinfo">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
@@ -15,7 +16,7 @@ export const Footer: React.FC = () => {
               <span>CampusConnect</span>
             </div>
             <p className="text-slate-400 text-xs leading-relaxed">
-              Standardized campus facilities maintenance reporting, automated triage classification, and real-time resolution milestone tracking.
+              Campus maintenance reporting with staff triage, status tracking, and optional AI suggestions.
             </p>
             <div className="flex items-center gap-1.5 text-emerald-400 text-[11px]">
               <ShieldCheck size={14} />
@@ -56,7 +57,7 @@ export const Footer: React.FC = () => {
             <ul className="space-y-2 text-slate-400 text-[11px] leading-relaxed">
               <li className="flex items-start gap-1.5">
                 <Lock size={12} className="text-blue-400 shrink-0 mt-0.5" />
-                <span>Student complaints are private and restricted to the reporting student and certified staff.</span>
+                <span>Complaints are visible only to the reporting student and authorised facilities staff.</span>
               </li>
               <li>
                 Internal technician dispatch notes are isolated from student view.
@@ -73,11 +74,14 @@ export const Footer: React.FC = () => {
               Facility Emergency Protocol
             </h4>
             <p className="text-slate-400 mb-2 leading-relaxed">
-              For active water main ruptures, exposed electrical arcing, gas odors, or fire hazards, notify physical plant dispatch immediately.
+              For fire, gas odours, exposed live wires, flooding near power, or anyone hurt, leave the area and call emergency services or your campus emergency desk immediately. Do not wait for a ticket.
             </p>
-            <div className="bg-slate-800/80 rounded-xl p-3 border border-slate-700 space-y-1 font-mono text-[11px]">
-              <div className="text-amber-300 font-semibold">Facilities Desk: Ext. 4444</div>
-              <div className="text-slate-400 text-[10px]">Campus Maintenance Dispatch Office</div>
+            <div className="bg-slate-800/80 rounded-xl p-3 border border-slate-700 space-y-1 text-[11px]">
+              {emergencyContact ? (
+                <div className="text-amber-300 font-semibold">Campus emergency desk: {emergencyContact}</div>
+              ) : (
+                <div className="text-slate-300">The campus emergency number has not been configured on this site. Use the number published by your campus.</div>
+              )}
             </div>
           </div>
         </div>

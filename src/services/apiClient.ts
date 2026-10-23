@@ -21,7 +21,24 @@ import {
   TicketHistoryResponse,
   TicketListResponse,
   UpdateTicketStatusRequest,
-  User
+  User,
+  AppConfig,
+  AuditEntry,
+  ConfigSection,
+  EmergencyIncident,
+  EmergencyLocation,
+  EmergencyType,
+  ImpactInputs,
+  Incident,
+  NotificationAttempt,
+  NotificationProviderStatus,
+  PriorityLevel,
+  ProfileResponse,
+  PulseSummary,
+  StudentEmergencyView,
+  StudentProfile,
+  CampusRoom,
+  CampusFacility
 } from '../shared/types.js';
 
 class ApiClient {
@@ -150,6 +167,10 @@ class ApiClient {
     query?: string;
     building?: string;
     department?: string;
+    priority?: string;
+    from?: string;
+    to?: string;
+    sort?: string;
   }): Promise<TicketListResponse> {
     const searchParams = new URLSearchParams();
     if (params?.category && params.category !== 'ALL') searchParams.set('category', params.category);
@@ -157,6 +178,10 @@ class ApiClient {
     if (params?.department && params.department !== 'ALL') searchParams.set('department', params.department);
     if (params?.building && params.building !== 'ALL') searchParams.set('building', params.building);
     if (params?.query) searchParams.set('query', params.query);
+    if (params?.priority && params.priority !== 'ALL') searchParams.set('priority', params.priority);
+    if (params?.from) searchParams.set('from', params.from);
+    if (params?.to) searchParams.set('to', params.to);
+    if (params?.sort && params.sort !== 'newest') searchParams.set('sort', params.sort);
 
     const qs = searchParams.toString();
     return this.request<TicketListResponse>(`/api/tickets${qs ? `?${qs}` : ''}`);
@@ -227,6 +252,146 @@ class ApiClient {
   public async checkHealth(): Promise<any> {
     return this.request('/api/health');
   }
+
+  private post<T = any>(endpoint: string, body?: unknown, method = 'POST'): Promise<T> {
+    return this.request<T>(endpoint, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+  }
+
+  /** Fetches a protected file (evidence photo) and returns an object URL. */
+  public async fetchBlobUrl(endpoint: string): Promise<string> {
+    const res = await fetch(endpoint, { headers: this.token ? { Authorization: `Bearer ${this.token}` } : {} });
+    if (!res.ok) throw new Error(`Could not load file (status ${res.status})`);
+    return URL.createObjectURL(await res.blob());
+  }
+
+  // --------------------------------------------------------------------------
+  // PROFILE
+  // --------------------------------------------------------------------------
+
+  public getProfile(): Promise<ProfileResponse> {
+    return this.request<ProfileResponse>('/api/profile');
+  }
+
+  /** Throws ApiError with fieldErrors on validation failure. */
+  public async saveProfile(profile: Partial<StudentProfile>): Promise<ProfileResponse> {
+    const res = await fetch('/api/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', ...(this.token ? { Authorization: `Bearer ${this.token}` } : {}) },
+      body: JSON.stringify(profile)
+    });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const err = new Error(json.error || `Save failed (status ${res.status})`) as Error & { fieldErrors?: Record<string, string> };
+      err.fieldErrors = json.fieldErrors;
+      throw err;
+    }
+    return json;
+  }
+
+  // --------------------------------------------------------------------------
+  // EMERGENCIES & RESPONDERS
+  // --------------------------------------------------------------------------
+
+  public reportEmergency(body: { clientRequestId: string; type: EmergencyType; location: EmergencyLocation; confirmNew?: boolean }) {
+    return this.post<{ success: boolean; created: boolean; possibleDuplicate: boolean; incident: StudentEmergencyView }>('/api/emergencies', body);
+  }
+
+  public getMyEmergencies() {
+    return this.request<{ success: boolean; incidents: StudentEmergencyView[] }>('/api/emergencies/mine');
+  }
+
+  public getResponderIncidents() {
+    return this.request<{ success: boolean; incidents: ResponderIncident[] }>('/api/responder/emergencies');
+  }
+
+  public responderAction(id: string, action: 'acknowledge' | 'responding' | 'updates' | 'close' | 'escalate', body?: Record<string, string>) {
+    return this.post<{ success: boolean; incident: ResponderIncident }>(`/api/responder/emergencies/${encodeURIComponent(id)}/${action}`, body ?? {});
+  }
+
+  // --------------------------------------------------------------------------
+  // TICKET OPERATIONS
+  // --------------------------------------------------------------------------
+
+  private ticketOp<T = { success: boolean; ticket: Ticket }>(id: string, op: string, body?: unknown) {
+    return this.post<T>(`/api/tickets/${encodeURIComponent(id)}/${op}`, body ?? {});
+  }
+
+  public getAssignableStaff(department?: string) {
+    return this.request<{ success: boolean; staff: { id: string; name: string; department?: string }[] }>(
+      `/api/staff/assignable${department ? `?department=${encodeURIComponent(department)}` : ''}`
+    );
+  }
+  public setImpact(id: string, impact: Partial<ImpactInputs>) { return this.ticketOp(id, 'impact', { impact }); }
+  public overridePriority(id: string, level: PriorityLevel | null, reason: string) { return this.ticketOp(id, 'priority-override', { level, reason }); }
+  public uploadResolutionProof(id: string, summary: string, imageBase64: string, mimeType: string) {
+    return this.ticketOp(id, 'resolution-proof', { summary, imageBase64, mimeType });
+  }
+  public requestReopen(id: string, reason: string) { return this.ticketOp<{ success: boolean; ticket: StudentTicketView }>(id, 'reopen-request', { reason }); }
+  public addBlocker(id: string, description: string) { return this.ticketOp(id, 'blockers', { description }); }
+  public resolveBlocker(id: string, blockerId: string) { return this.ticketOp(id, `blockers/${encodeURIComponent(blockerId)}/resolve`); }
+  public setEta(id: string, body: { earliest: string; latest: string; note?: string; changeReason?: string }) { return this.ticketOp(id, 'eta', body); }
+  public setTicketAsset(id: string, assetId: string | null) { return this.ticketOp(id, 'asset', { assetId }); }
+  public setWasteReview(id: string, status: 'confirmed' | 'rejected', note?: string) { return this.ticketOp(id, 'waste-review', { status, note }); }
+  public getTiming(id: string) { return this.request<any>(`/api/tickets/${encodeURIComponent(id)}/timing`); }
+  public getWorkarounds(id: string) { return this.request<any>(`/api/tickets/${encodeURIComponent(id)}/workarounds`); }
+  public evidenceUrl(ticketId: string, proofId: string) {
+    return `/api/tickets/${encodeURIComponent(ticketId)}/evidence/${encodeURIComponent(proofId)}`;
+  }
+
+  // --------------------------------------------------------------------------
+  // INCIDENTS, INSIGHTS, CAMPUS DATA
+  // --------------------------------------------------------------------------
+
+  public getIncidents() { return this.request<{ success: boolean; incidents: Incident[] }>('/api/incidents'); }
+  public createIncident(title: string, ticketIds: string[]) { return this.post<{ success: boolean; incident: Incident }>('/api/incidents', { title, ticketIds }); }
+  public linkIncident(id: string, ticketId: string) { return this.post(`/api/incidents/${encodeURIComponent(id)}/link`, { ticketId }); }
+  public unlinkIncident(id: string, ticketId: string, note: string) { return this.post(`/api/incidents/${encodeURIComponent(id)}/unlink`, { ticketId, note }); }
+  public setIncidentStatus(id: string, status: 'reviewed' | 'dismissed' | 'resolved', note: string) {
+    return this.post(`/api/incidents/${encodeURIComponent(id)}/status`, { status, note });
+  }
+  public getInsight(kind: 'repeat-offenders' | 'waste' | 'hotspots' | 'pulse-signals' | 'readiness') { return this.request<any>(`/api/insights/${kind}`); }
+  public recordRoomCheck(roomId: string, body: { assetId?: string; result: 'working' | 'issue'; note?: string }) {
+    return this.post(`/api/rooms/${encodeURIComponent(roomId)}/checks`, body);
+  }
+  public verifyFacility(id: string, status: 'available' | 'unavailable' | 'unknown') { return this.post(`/api/facilities/${encodeURIComponent(id)}/verify`, { status }); }
+  public getCampus() {
+    return this.request<{ success: boolean; buildings: { id: string; name: string; campus: string }[]; assets: { id: string; name: string; type: string; building: string; floor?: string }[]; rooms: CampusRoom[]; facilities: CampusFacility[] }>('/api/campus');
+  }
+
+  // --------------------------------------------------------------------------
+  // CAMPUS PULSE
+  // --------------------------------------------------------------------------
+
+  /** Sent without the session token so the submission is not tied to the account. */
+  public async submitPulse(body: { topic: string; building: string; message?: string; website?: string }) {
+    const res = await fetch('/api/pulse', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || `Submission failed (status ${res.status})`);
+    return json;
+  }
+  public async getPulseBuildings(): Promise<string[]> {
+    const res = await fetch('/api/pulse/buildings');
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.error || 'Could not load buildings');
+    return json.buildings;
+  }
+  public getPulseSummary() { return this.request<{ success: boolean; summary: PulseSummary }>('/api/pulse/summary'); }
+
+  // --------------------------------------------------------------------------
+  // ADMIN CONFIGURATION
+  // --------------------------------------------------------------------------
+
+  public getAdminConfig() { return this.request<{ success: boolean; config: AppConfig; notificationProvider: NotificationProviderStatus }>('/api/admin/config'); }
+  public updateConfigSection(section: ConfigSection, value: unknown) {
+    return this.post<{ success: boolean; config: AppConfig }>(`/api/admin/config/${section}`, { value }, 'PUT');
+  }
+  public getAuditLog(limit = 200) { return this.request<{ success: boolean; entries: AuditEntry[] }>(`/api/admin/audit?limit=${limit}`); }
 }
+
+export type ResponderIncident = EmergencyIncident & {
+  alertState: string;
+  alertDetail: string;
+  notifications: NotificationAttempt[];
+};
 
 export const apiClient = new ApiClient();

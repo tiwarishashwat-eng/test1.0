@@ -11,11 +11,12 @@ import {
   User as UserIcon,
   Shield,
   GraduationCap,
-  Sparkles
+  Sparkles,
+  Siren
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext.js';
 
-export type AppView = 'student' | 'staff' | 'track' | 'admin';
+export type AppView = 'student' | 'staff' | 'track' | 'admin' | 'responder';
 
 interface HeaderProps {
   currentView: AppView;
@@ -32,6 +33,7 @@ export interface ServerStatus {
     lastCallOk: boolean | null;
   };
   demoMode: boolean;
+  emergencyContact?: string | null;
 }
 
 /** Describes AI availability from what the server has actually observed. */
@@ -62,7 +64,7 @@ export const Header: React.FC<HeaderProps> = ({
           <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
             CAMPUS DISPATCH
           </span>
-          <span className="hidden sm:inline">Active facility management for Plumbing, Electricity, Cleanliness & Internet.</span>
+          <span className="hidden sm:inline">Campus maintenance requests and emergency reporting.</span>
         </div>
         <div className="flex items-center gap-4 text-[11px]">
           {serverStatus?.demoMode && (
@@ -87,7 +89,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Brand */}
           <div
             className="flex items-center gap-3 cursor-pointer group"
-            onClick={() => onNavigate(user?.role === 'staff' ? 'staff' : user?.role === 'admin' ? 'admin' : 'student')}
+            onClick={() => onNavigate(user?.role === 'staff' ? 'staff' : user?.role === 'admin' ? 'admin' : user?.role === 'responder' ? 'responder' : 'student')}
           >
             <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-700 via-indigo-600 to-sky-500 flex items-center justify-center text-white shadow-md shadow-blue-500/20 group-hover:scale-105 transition-transform">
               <Building2 className="w-5 h-5" />
@@ -102,7 +104,7 @@ export const Header: React.FC<HeaderProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-500 hidden sm:block">
-                AI Maintenance Triage &amp; Resolution Platform
+                Campus Maintenance &amp; Emergency Reporting
               </p>
             </div>
           </div>
@@ -153,6 +155,20 @@ export const Header: React.FC<HeaderProps> = ({
               </button>
             )}
 
+            {/* Responders (and admins) */}
+            {(user?.role === 'responder' || user?.role === 'admin') && (
+              <button
+                onClick={() => onNavigate('responder')}
+                aria-current={currentView === 'responder' ? 'page' : undefined}
+                className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 cursor-pointer ${
+                  currentView === 'responder' ? 'bg-rose-700 text-white shadow-xs font-semibold' : 'text-rose-700 hover:text-rose-900 hover:bg-rose-100/60'
+                }`}
+              >
+                <Siren size={15} />
+                <span>Emergencies</span>
+              </button>
+            )}
+
             {/* If Admin */}
             {user?.role === 'admin' && (
               <button
@@ -191,6 +207,8 @@ export const Header: React.FC<HeaderProps> = ({
                       ? 'Administrator'
                       : user.role === 'staff'
                       ? `Staff • ${user.department || 'Triage'}`
+                      : user.role === 'responder'
+                      ? `Responder • ${user.responderType === 'security' ? 'Security' : 'Medical'}`
                       : 'Campus Student'}
                   </div>
                 </div>

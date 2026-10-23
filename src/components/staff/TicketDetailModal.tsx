@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   X,
   AlertTriangle,
@@ -29,7 +29,7 @@ import {
 import { CategoryBadge } from '../common/CategoryBadge.js';
 import { StatusBadge } from '../common/StatusBadge.js';
 import { apiClient } from '../../services/apiClient.js';
-import { DEPARTMENT_TECHNICIANS } from './staffUtils.js';
+import { StaffTicketOperations } from './StaffTicketOperations.js';
 import { useAuth } from '../../context/AuthContext.js';
 import { aiSourceDetail, aiSourceTitle } from '../../shared/aiLabels.js';
 
@@ -57,10 +57,29 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
   const [assignDept, setAssignDept] = useState<Department>(
     ticket.assignment?.department || CATEGORY_DEPARTMENT_ROUTING[ticket.category]
   );
-  const [technicianName, setTechnicianName] = useState(ticket.assignment?.assignedTo || '');
-  const [priority, setPriority] = useState<'Low' | 'Medium' | 'High' | 'Emergency'>(
-    ticket.assignment?.priority || (ticket.aiAnalysis?.urgencyAssessment === 'Safety Hazard' ? 'Emergency' : 'Medium')
-  );
+  const [assigneeId, setAssigneeId] = useState(ticket.assignment?.assignedToId || '');
+  const [assignableStaff, setAssignableStaff] = useState<{ id: string; name: string }[]>([]);
+  const [staffLoadError, setStaffLoadError] = useState<string | null>(null);
+
+  // Real, active staff accounts in the selected department
+  useEffect(() => {
+    let cancelled = false;
+    setStaffLoadError(null);
+    apiClient
+      .getAssignableStaff(assignDept)
+      .then((res) => {
+        if (!cancelled) setAssignableStaff(res.staff);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setAssignableStaff([]);
+          setStaffLoadError(err.message || 'Could not load staff list');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [assignDept]);
   const [assignNotes, setAssignNotes] = useState(ticket.assignment?.notes || '');
   const [isAssigning, setIsAssigning] = useState(false);
   const [assignSuccess, setAssignSuccess] = useState<string | null>(null);
@@ -108,8 +127,7 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
     try {
       const res = await apiClient.assignTicket(ticket.id, {
         department: assignDept,
-        assignedTo: technicianName.trim() || undefined,
-        priority,
+        assignedToId: assigneeId || undefined,
         notes: assignNotes.trim() || undefined
       });
 
@@ -416,9 +434,12 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
             </div>
 
             {statusError && (
-              <p className="text-xs text-rose-600 font-medium">{statusError}</p>
+              <p className="text-xs text-rose-600 font-medium" role="alert">{statusError}</p>
             )}
           </div>
+
+          {/* Priority, proof of fix, blockers, ETA, asset, workarounds */}
+          <StaffTicketOperations ticket={ticket} onTicketUpdated={onTicketUpdated} />
 
           {/* Department & Staff Assignment Controls */}
           <form onSubmit={handleAssign} className="p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-4">
@@ -435,10 +456,8 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
                 <select
                   value={assignDept}
                   onChange={(e) => {
-                    const d = e.target.value as Department;
-                    setAssignDept(d);
-                    const presets = DEPARTMENT_TECHNICIANS[d] || [];
-                    if (presets.length > 0) setTechnicianName(presets[0]);
+                    setAssignDept(e.target.value as Department);
+                    setAssigneeId('');
                   }}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium"
                 >
@@ -448,41 +467,28 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
                 </select>
               </div>
 
-              <div>
-                <label className="block text-slate-600 font-semibold mb-1">
-                  Assign Technician
-                </label>
-                <input
-                  type="text"
-                  list="tech-presets"
-                  value={technicianName}
-                  onChange={(e) => setTechnicianName(e.target.value)}
-                  placeholder="Select or enter technician name"
-                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium"
-                />
-                <datalist id="tech-presets">
-                  {(DEPARTMENT_TECHNICIANS[assignDept] || []).map((t) => (
-                    <option key={t} value={t} />
-                  ))}
-                </datalist>
-              </div>
-
-              <div>
-                <label className="block text-slate-600 font-semibold mb-1">
-                  Priority Rating
+              <div className="sm:col-span-2">
+                <label htmlFor="assignee-select" className="block text-slate-600 font-semibold mb-1">
+                  Assign Staff Member (optional)
                 </label>
                 <select
-                  value={priority}
-                  onChange={(e) => setPriority(e.target.value as any)}
+                  id="assignee-select"
+                  value={assigneeId}
+                  onChange={(e) => setAssigneeId(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium"
                 >
-                  <option value="Low">Low (Routine maintenance)</option>
-                  <option value="Medium">Medium (Standard SLA 24h)</option>
-                  <option value="High">High (Impacting classes/study)</option>
-                  <option value="Emergency">Emergency (Immediate hazard)</option>
+                  <option value="">Department queue (no individual)</option>
+                  {assignableStaff.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
                 </select>
+                {staffLoadError && <p className="text-[11px] text-rose-700 mt-1" role="alert">{staffLoadError}</p>}
+                {!staffLoadError && assignableStaff.length === 0 && (
+                  <p className="text-[11px] text-slate-500 mt-1">No active staff accounts in this department yet.</p>
+                )}
               </div>
             </div>
+            <p className="text-[11px] text-slate-500">Priority is set by the impact-based priority engine below (staff may override with a reason).</p>
 
             <div>
               <label className="block text-slate-600 font-semibold mb-1 text-xs">
@@ -516,7 +522,7 @@ export const TicketDetailModal: React.FC<TicketDetailModalProps> = ({
               </p>
             )}
             {assignError && (
-              <p className="text-xs text-rose-700 bg-rose-50 p-2 rounded-md border border-rose-200">
+              <p className="text-xs text-rose-700 bg-rose-50 p-2 rounded-md border border-rose-200" role="alert">
                 {assignError}
               </p>
             )}

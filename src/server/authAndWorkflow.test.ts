@@ -138,6 +138,24 @@ async function runAuthAndWorkflowTests() {
   const validTransition3 = ticketRepository.updateStatus(testTicket.id, 'In Progress', 'Work commenced', staffAuth!.user);
   assert(validTransition3.success, 'Valid transition "Assigned" -> "In Progress" succeeded');
 
+  // Proof of fix is required before Resolved
+  const withoutProof = ticketRepository.updateStatus(testTicket.id, 'Resolved', 'No proof yet', staffAuth!.user);
+  assert(!withoutProof.success && /proof of fix/i.test(withoutProof.error || ''), 'Resolved is blocked until proof of fix is uploaded');
+  ticketRepository.addResolutionProof(
+    testTicket.id,
+    {
+      id: 'ev-00000000-0000-4000-8000-000000000000',
+      summary: 'Replaced the leaking trap seal',
+      uploadedBy: staffAuth!.user.name,
+      uploadedById: staffAuth!.user.id,
+      uploadedAt: new Date().toISOString(),
+      mimeType: 'image/png',
+      sizeBytes: 100,
+      sha256: 'test'
+    },
+    staffAuth!.user
+  );
+
   // Valid transition: In Progress -> Resolved
   const validTransition4 = ticketRepository.updateStatus(testTicket.id, 'Resolved', 'Work completed and tested', staffAuth!.user);
   assert(validTransition4.success, 'Valid transition "In Progress" -> "Resolved" succeeded');

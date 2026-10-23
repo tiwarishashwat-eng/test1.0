@@ -4,22 +4,34 @@
  * private internal staff notes, human-supervised duplicate reviews, and atomic persistence.
  */
 
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import {
+  AIAnalysis,
   Department,
   DuplicateCandidate,
+  EtaEstimate,
+  ImpactInputs,
   InternalStaffNote,
+  PriorityLevel,
+  ResolutionProof,
+  SlaEscalation,
   StatusHistoryEntry,
   StudentTicketView,
   Ticket,
   TicketCategory,
   TicketStatus,
+  TICKET_CATEGORIES,
   User,
+  WasteReview,
   STAFF_ONLY_TICKET_FIELDS,
   VALID_STATUS_TRANSITIONS
 } from '../shared/types.js';
 import { isDemoSeedEnabled, resolveDataDir } from './userStore.js';
+import { configStore } from './configStore.js';
+import { assessPriority, effectivePriority } from './priorityEngine.js';
+import { SYSTEM_ACTOR } from './auditStore.js';
 
 
 /** Removes internal notes and staff-only duplicate review data. */
@@ -58,6 +70,9 @@ export class TicketRepository {
             // assigned to an arbitrary student, which would expose it to that student.
             if (!t.studentId) orphaned++;
             if (!t.internalNotes) t.internalNotes = [];
+            if (!TICKET_CATEGORIES.includes(t.category)) t.category = 'Other';
+            // Older records: add a priority recommendation and SLA deadline (nothing else changes)
+            if (!t.priorityAssessment) this.refreshPriority(t);
             this.tickets.set(t.id, t);
           }
           if (orphaned > 0) {
@@ -72,7 +87,11 @@ export class TicketRepository {
         }
       }
     } catch (err) {
-      console.warn('[TicketStore] Could not read disk persistence, starting a fresh store:', err);
+      // Never overwrite a ticket file we failed to read; that would silently discard records
+      if (fs.existsSync(this.dbFile)) {
+        throw new Error(`[TicketStore] ${this.dbFile} exists but could not be read. Fix or move it before starting. ${err}`);
+      }
+      console.warn('[TicketStore] Could not initialise storage, starting a fresh store:', err);
     }
 
     if (isDemoSeedEnabled()) {
@@ -418,7 +437,8 @@ export class TicketRepository {
   ): Ticket[] | StudentTicketView[] {
     let list = Array.from(this.tickets.values());
 
-    // Role-based ownership restriction
+    // Role-based ownership restriction. Responders have emergency access only, never maintenance tickets.
+    if (user.role === 'responder') return [];
     if (user.role === 'student') {
       list = list.filter((t) => t.studentId === user.id);
     }
@@ -485,7 +505,7 @@ export class TicketRepository {
    */
   public getByIdForUser(id: string, user: User): Ticket | StudentTicketView | null {
     const ticket = this.getRawById(id);
-    if (!ticket) return null;
+    if (!ticket || user.role === 'responder') return null;
 
     if (user.role === 'student') {
       if (ticket.studentId !== user.id) {
@@ -497,24 +517,40 @@ export class TicketRepository {
     return ticket;
   }
 
+  /** Returns an existing ticket for a retried submission (same user + idempotency key). */
+  public findBySubmissionId(studentId: string, clientSubmissionId: string): Ticket | undefined {
+    for (const t of this.tickets.values()) {
+      if (t.studentId === studentId && t.clientSubmissionId === clientSubmissionId) return t;
+    }
+    return undefined;
+  }
+
   public createTicket(params: {
     description: string;
     location: string;
     building: string;
     roomOrArea?: string;
+    campus?: string;
+    floor?: string;
+    problemTitle?: string;
     category: TicketCategory;
     categorySource?: 'student' | 'ai_suggested';
     studentUser: User;
     imageBase64?: string;
     mimeType?: string;
-    aiAnalysis?: any;
+    aiAnalysis?: AIAnalysis;
     studentFollowUpAnswers?: Record<string, string>;
     duplicateWarnings?: DuplicateCandidate[];
+    impact?: ImpactInputs;
+    assetId?: string;
+    clientSubmissionId?: string;
   }): Ticket {
     const id = `CC-${this.nextIdCounter++}`;
     const now = new Date().toISOString();
 
-    const title = params.aiAnalysis?.conciseSummary
+    const title = params.problemTitle
+      ? params.problemTitle.slice(0, 90)
+      : params.aiAnalysis?.conciseSummary
       ? params.aiAnalysis.conciseSummary.slice(0, 90)
       : params.description.slice(0, 80);
 
@@ -554,35 +590,232 @@ export class TicketRepository {
       statusHistory: [initialHistoryEntry],
       duplicateWarnings: params.duplicateWarnings || [],
       studentFollowUpAnswers: params.studentFollowUpAnswers || {},
+      problemTitle: params.problemTitle,
+      campus: params.campus,
+      floor: params.floor,
+      impact: params.impact,
+      assetId: params.assetId,
+      clientSubmissionId: params.clientSubmissionId,
       internalNotes: []
     };
 
+    this.refreshPriority(newTicket);
     this.tickets.set(id, newTicket);
     this.persistToDisk();
     return newTicket;
   }
 
+  // --------------------------------------------------------------------------
+  // Priority & SLA (deterministic; see priorityEngine.ts)
+  // --------------------------------------------------------------------------
+
+  /** Recomputes the recommendation and the SLA deadline for the effective priority. */
+  private refreshPriority(ticket: Ticket, now = new Date()) {
+    const inActiveCluster = (ticket.clusterReporters ?? 0) > 0;
+    ticket.priorityAssessment = assessPriority(ticket, { now, inActiveCluster, clusterReporters: ticket.clusterReporters });
+    const hours = configStore.slaHoursFor(ticket.category, effectivePriority(ticket));
+    ticket.slaDeadline = new Date(new Date(ticket.createdAt).getTime() + hours * 3600 * 1000).toISOString();
+    // A newly-overdue ticket gets the overdue factor on the next pass
+    if (ticket.status !== 'Resolved' && new Date(ticket.slaDeadline).getTime() < now.getTime()) {
+      ticket.priorityAssessment = assessPriority(ticket, { now, inActiveCluster, clusterReporters: ticket.clusterReporters });
+    }
+  }
+
+  private pushHistory(ticket: Ticket, actor: Pick<User, 'id' | 'name'>, notes: string, toStatus?: TicketStatus, fromStatus?: TicketStatus) {
+    ticket.statusHistory.push({
+      id: `hist-${crypto.randomUUID()}`,
+      ticketId: ticket.id,
+      fromStatus,
+      toStatus: toStatus ?? ticket.status,
+      changedAt: new Date().toISOString(),
+      changedBy: actor.name,
+      changedById: actor.id,
+      notes
+    });
+    ticket.updatedAt = new Date().toISOString();
+  }
+
+  public setImpact(id: string, impact: ImpactInputs, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    ticket.impact = impact;
+    this.refreshPriority(ticket);
+    this.pushHistory(ticket, actor, `Impact details updated. Recommended priority: ${ticket.priorityAssessment!.level}.`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public overridePriority(id: string, level: PriorityLevel | null, reason: string, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    const previous = effectivePriority(ticket);
+    ticket.priorityOverride = level
+      ? { level, reason, by: actor.name, byId: actor.id, at: new Date().toISOString() }
+      : undefined;
+    this.refreshPriority(ticket);
+    this.pushHistory(
+      ticket,
+      actor,
+      level ? `Priority overridden from ${previous} to ${level}. Reason: ${reason}` : `Priority override removed. Reason: ${reason}`
+    );
+    this.persistToDisk();
+    return ticket;
+  }
+
+  /** Called by the incident service whenever incident membership changes. */
+  public setIncidentLinks(id: string, incidentIds: string[], clusterReporters: number | undefined) {
+    const ticket = this.getRawById(id);
+    if (!ticket) return;
+    ticket.incidentIds = incidentIds;
+    ticket.clusterReporters = clusterReporters;
+    this.refreshPriority(ticket);
+    this.persistToDisk();
+  }
+
+  public excludeFromCluster(id: string, incidentId: string) {
+    const ticket = this.getRawById(id);
+    if (!ticket) return;
+    ticket.clusterExclusions = [...new Set([...(ticket.clusterExclusions ?? []), incidentId])];
+    this.persistToDisk();
+  }
+
+  /** Re-evaluates every open ticket (overdue factor changes with time). Returns tickets now overdue. */
+  public refreshAllPriorities(now = new Date()): Ticket[] {
+    const overdue: Ticket[] = [];
+    for (const t of this.tickets.values()) {
+      if (t.status === 'Resolved') continue;
+      this.refreshPriority(t, now);
+      if (t.slaDeadline && new Date(t.slaDeadline).getTime() < now.getTime()) overdue.push(t);
+    }
+    this.persistToDisk();
+    return overdue;
+  }
+
+  public recordSlaEscalation(id: string, escalation: SlaEscalation) {
+    const ticket = this.getRawById(id);
+    if (!ticket) return;
+    ticket.slaEscalations = [...(ticket.slaEscalations ?? []), escalation];
+    this.pushHistory(ticket, SYSTEM_ACTOR, `SLA escalation level ${escalation.level}: ${escalation.reason} Escalated to ${escalation.nextAuthority}.`);
+    this.persistToDisk();
+  }
+
+  // --------------------------------------------------------------------------
+  // Proof of fix, reopening, blockers, ETA, assets, waste review
+  // --------------------------------------------------------------------------
+
+  /** The proof that currently satisfies the Resolved requirement, if any. */
+  public currentProof(ticket: Ticket): ResolutionProof | undefined {
+    return [...(ticket.resolutionProofs ?? [])].reverse().find((p) => !p.superseded);
+  }
+
+  public addResolutionProof(id: string, proof: ResolutionProof, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    // Replacing evidence keeps the old record, marked superseded
+    for (const p of ticket.resolutionProofs ?? []) p.superseded = true;
+    ticket.resolutionProofs = [...(ticket.resolutionProofs ?? []), proof];
+    this.pushHistory(ticket, actor, `Proof of fix uploaded: ${proof.summary}`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public requestReopen(id: string, student: User, reason: string): { ticket?: Ticket; error?: string; status: number } {
+    const ticket = this.getRawById(id);
+    if (!ticket || ticket.studentId !== student.id) return { error: 'No ticket with that ID was found in your complaints.', status: 404 };
+    if (ticket.status !== 'Resolved') return { error: 'Only resolved tickets can be reported as not fixed.', status: 409 };
+    const previous = ticket.status;
+    ticket.reopenRequests = [
+      ...(ticket.reopenRequests ?? []),
+      { id: `reopen-${crypto.randomUUID()}`, reason, requestedAt: new Date().toISOString(), requestedById: student.id }
+    ];
+    // Existing proof no longer counts; staff must upload new evidence to resolve again
+    for (const p of ticket.resolutionProofs ?? []) p.superseded = true;
+    ticket.status = 'Under Review';
+    ticket.resolvedAt = undefined;
+    this.pushHistory(ticket, student, `Student reported the repair was unsuccessful and requested review: ${reason}`, 'Under Review', previous);
+    this.refreshPriority(ticket);
+    this.persistToDisk();
+    return { ticket, status: 200 };
+  }
+
+  public addBlocker(id: string, description: string, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    ticket.blockers = [
+      ...(ticket.blockers ?? []),
+      { id: `blk-${crypto.randomUUID()}`, description, createdAt: new Date().toISOString(), createdBy: actor.name }
+    ];
+    this.pushHistory(ticket, actor, `Blocker added: ${description}`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public resolveBlocker(id: string, blockerId: string, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    const blocker = ticket?.blockers?.find((b) => b.id === blockerId && !b.resolvedAt);
+    if (!ticket || !blocker) return null;
+    blocker.resolvedAt = new Date().toISOString();
+    blocker.resolvedBy = actor.name;
+    this.pushHistory(ticket, actor, `Blocker cleared: ${blocker.description}`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public setEta(id: string, eta: Omit<EtaEstimate, 'setBy' | 'setAt'>, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    const entry: EtaEstimate = { ...eta, setBy: actor.name, setAt: new Date().toISOString() };
+    if (ticket.etaEstimate) ticket.etaHistory = [...(ticket.etaHistory ?? []), ticket.etaEstimate];
+    ticket.etaEstimate = entry;
+    const window = `${new Date(eta.earliest).toISOString()} – ${new Date(eta.latest).toISOString()}`;
+    this.pushHistory(ticket, actor, `Staff estimate updated to ${window}${eta.changeReason ? `. Reason: ${eta.changeReason}` : ''}`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public setAsset(id: string, assetId: string | undefined, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    ticket.assetId = assetId;
+    this.pushHistory(ticket, actor, assetId ? `Linked to asset ${assetId}` : 'Asset link removed');
+    this.persistToDisk();
+    return ticket;
+  }
+
+  public setWasteReview(id: string, review: WasteReview, actor: User): Ticket | null {
+    const ticket = this.getRawById(id);
+    if (!ticket) return null;
+    ticket.wasteReview = review;
+    this.pushHistory(ticket, actor, `Resource-waste report ${review.status}${review.note ? `: ${review.note}` : ''}`);
+    this.persistToDisk();
+    return ticket;
+  }
+
+  /**
+   * Assigns a ticket to a department and, optionally, a specific staff account.
+   * The caller must have validated that `assignee` is an active staff member of `department`.
+   */
   public assignTicket(
     id: string,
     department: Department,
-    assignedTo?: string,
-    priority: 'Low' | 'Medium' | 'High' | 'Emergency' = 'Medium',
-    notes?: string,
-    assignedByUser?: User
+    assignee: User | undefined,
+    notes: string | undefined,
+    assignedByUser: User
   ): Ticket | undefined {
     const ticket = this.getRawById(id);
     if (!ticket) return undefined;
 
     const now = new Date().toISOString();
-    const assignedByName = assignedByUser ? assignedByUser.name : 'Staff Dispatcher';
+    const assignedByName = assignedByUser.name;
+    const assignedTo = assignee?.name;
 
     ticket.assignment = {
       department,
-      assignedTo: assignedTo?.trim() || undefined,
+      assignedTo,
+      assignedToId: assignee?.id,
       assignedAt: now,
       assignedBy: assignedByName,
-      assignedById: assignedByUser?.id,
-      priority,
+      assignedById: assignedByUser.id,
       notes: notes?.trim() || undefined
     };
 
@@ -627,6 +860,14 @@ export class TicketRepository {
       };
     }
 
+    // Proof of fix: Resolved requires a current (non-superseded) summary + photo
+    if (newStatus === 'Resolved' && !this.currentProof(ticket)) {
+      return {
+        success: false,
+        error: 'Upload proof of fix (resolution summary and photo) before marking this ticket Resolved.'
+      };
+    }
+
     const previousStatus = ticket.status;
     const now = new Date().toISOString();
     const changerName = changedByUser ? changedByUser.name : 'Staff Dispatcher';
@@ -651,6 +892,12 @@ export class TicketRepository {
       notes: notes || `Status transitioned to ${newStatus}`
     });
 
+    // Reopening without a student request: old evidence no longer proves the current state
+    if (previousStatus === 'Resolved') {
+      for (const p of ticket.resolutionProofs ?? []) p.superseded = true;
+    }
+
+    this.refreshPriority(ticket);
     this.persistToDisk();
     return { success: true, ticket };
   }
@@ -720,9 +967,18 @@ export class TicketRepository {
         'Plumbing': 0,
         'Electricity': 0,
         'Cleanliness': 0,
-        'Internet Connectivity': 0
-      } as Record<TicketCategory, number>
+        'Internet Connectivity': 0,
+        'Other': 0
+      } as Record<TicketCategory, number>,
+      byPriority: { Low: 0, Medium: 0, High: 0, Critical: 0 } as Record<PriorityLevel, number>,
+      overdue: 0
     };
+    const nowMs = Date.now();
+    for (const t of all as Ticket[]) {
+      if (t.status === 'Resolved') continue;
+      stats.byPriority[effectivePriority(t)]++;
+      if (t.slaDeadline && new Date(t.slaDeadline).getTime() < nowMs) stats.overdue++;
+    }
 
     for (const t of all) {
       if (t.status === 'Submitted') stats.submitted++;

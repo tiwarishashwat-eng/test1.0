@@ -5,8 +5,14 @@
  *
  *   npm run check:gemini
  */
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import dotenv from 'dotenv';
 dotenv.config();
+
+// Use a throwaway data dir: this check must never create or change files in real data
+process.env.CAMPUSCONNECT_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'campusconnect-check-'));
 
 const { analyzeComplaintWithGemini, getGeminiStatus } = await import('../src/server/geminiService.js');
 

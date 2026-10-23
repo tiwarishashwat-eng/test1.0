@@ -1,6 +1,6 @@
 import React from 'react';
 import { TicketCategory } from '../../shared/types.js';
-import { Wrench, Zap, Sparkles, Wifi } from 'lucide-react';
+import { Wrench, Zap, Sparkles, Wifi, HelpCircle } from 'lucide-react';
 
 interface CategoryBadgeProps {
   category: TicketCategory;
@@ -15,7 +15,12 @@ export const CategoryBadge: React.FC<CategoryBadgeProps> = ({
   size = 'md',
   className = ''
 }) => {
-  const config = {
+  const config = ({
+    'Other': {
+      bg: 'bg-slate-100 text-slate-700 border-slate-300 ring-slate-500/10',
+      icon: HelpCircle,
+      dot: 'bg-slate-500'
+    },
     'Plumbing': {
       bg: 'bg-blue-50 text-blue-700 border-blue-200 ring-blue-500/10',
       icon: Wrench,
@@ -36,7 +41,7 @@ export const CategoryBadge: React.FC<CategoryBadgeProps> = ({
       icon: Wifi,
       dot: 'bg-indigo-500'
     }
-  }[category] || {
+  } as Record<TicketCategory, { bg: string; icon: typeof Wrench; dot: string }>)[category] || {
     bg: 'bg-slate-50 text-slate-700 border-slate-200 ring-slate-500/10',
     icon: Wrench,
     dot: 'bg-slate-400'

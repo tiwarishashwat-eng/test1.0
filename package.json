@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "start": "tsx server.ts --production",
-    "test": "tsx src/server/geminiService.test.ts && tsx src/server/authAndWorkflow.test.ts && tsx src/server/securityAndHonesty.test.ts",
+    "test": "tsx src/server/geminiService.test.ts && tsx src/server/authAndWorkflow.test.ts && tsx src/server/securityAndHonesty.test.ts && tsx src/server/featuresWorkflow.test.ts",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
     "check:gemini": "tsx scripts/checkGemini.ts"

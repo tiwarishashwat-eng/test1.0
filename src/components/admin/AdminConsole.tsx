@@ -22,10 +22,12 @@ import {
   User
 } from '../../shared/types.js';
 import { apiClient } from '../../services/apiClient.js';
+import { AdminConfigPanel } from './AdminConfigPanel.js';
+import { AdminAuditPanel } from './AdminAuditPanel.js';
 import { CategoryBadge } from '../common/CategoryBadge.js';
 
 export const AdminConsole: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'staff' | 'departments' | 'metrics'>('staff');
+  const [activeTab, setActiveTab] = useState<'staff' | 'departments' | 'metrics' | 'audit'>('staff');
   const [staffList, setStaffList] = useState<User[]>([]);
   const [metrics, setMetrics] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -37,7 +39,9 @@ export const AdminConsole: React.FC = () => {
   const [newStaffEmail, setNewStaffEmail] = useState('');
   const [newStaffPassword, setNewStaffPassword] = useState('');
   const [newStaffDept, setNewStaffDept] = useState<Department>(DEPARTMENTS[0]);
-  const [newStaffRole, setNewStaffRole] = useState<'staff' | 'admin'>('staff');
+  const [newStaffRole, setNewStaffRole] = useState<'staff' | 'admin' | 'responder'>('staff');
+  const [newResponderType, setNewResponderType] = useState<'medical' | 'security'>('medical');
+  const [newStaffPhone, setNewStaffPhone] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [formSuccess, setFormSuccess] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -75,8 +79,10 @@ export const AdminConsole: React.FC = () => {
         name: newStaffName,
         email: newStaffEmail,
         password: newStaffPassword,
-        department: newStaffDept,
-        role: newStaffRole
+        department: newStaffRole === 'responder' ? undefined : newStaffDept,
+        role: newStaffRole,
+        responderType: newStaffRole === 'responder' ? newResponderType : undefined,
+        phone: newStaffPhone.trim() || undefined
       });
 
       if (res.success) {
@@ -84,6 +90,7 @@ export const AdminConsole: React.FC = () => {
         setNewStaffName('');
         setNewStaffEmail('');
         setNewStaffPassword('');
+        setNewStaffPhone('');
         setShowAddStaffModal(false);
         fetchData();
       }
@@ -155,7 +162,7 @@ export const AdminConsole: React.FC = () => {
           }`}
         >
           <Building size={14} />
-          <span>Department &amp; Category Routing</span>
+          <span>Configuration</span>
         </button>
 
         <button
@@ -167,7 +174,17 @@ export const AdminConsole: React.FC = () => {
           }`}
         >
           <Database size={14} />
-          <span>Operational Metrics &amp; Audit</span>
+          <span>Operational Metrics</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab('audit')}
+          className={`px-4 py-2 rounded-xl transition-all cursor-pointer flex items-center gap-1.5 ${
+            activeTab === 'audit' ? 'bg-slate-900 text-white shadow-xs' : 'text-slate-600 hover:bg-slate-100'
+          }`}
+        >
+          <Lock size={14} />
+          <span>Audit History</span>
         </button>
       </div>
 
@@ -260,36 +277,9 @@ export const AdminConsole: React.FC = () => {
       )}
 
       {/* Tab 2: Department & Category Routing */}
-      {activeTab === 'departments' && (
-        <div className="bg-white rounded-2xl border border-slate-200 p-6 space-y-6 shadow-xs">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">
-              Approved Campus Maintenance Routing Policy
-            </h3>
-            <p className="text-xs text-slate-500 mt-0.5">
-              Strict 4-category boundary enforced by both the client-side validation and server-side state machine.
-            </p>
-          </div>
+      {activeTab === 'departments' && <AdminConfigPanel />}
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {TICKET_CATEGORIES.map((cat) => {
-              const dept = CATEGORY_DEPARTMENT_ROUTING[cat];
-              return (
-                <div key={cat} className="p-4 rounded-xl border border-slate-200 bg-slate-50/70 space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <CategoryBadge category={cat} size="md" />
-                    <span className="text-[10px] font-mono text-slate-400">Strict Category</span>
-                  </div>
-                  <div className="pt-2 border-t border-slate-200">
-                    <span className="text-slate-500 font-medium">Assigned Campus Department:</span>
-                    <p className="text-slate-900 font-bold text-sm mt-0.5">{dept}</p>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
+      {activeTab === 'audit' && <AdminAuditPanel />}
 
       {/* Tab 3: Metrics & Real Storage Status */}
       {activeTab === 'metrics' && (
@@ -399,12 +389,14 @@ export const AdminConsole: React.FC = () => {
                   type="password"
                   value={newStaffPassword}
                   onChange={(e) => setNewStaffPassword(e.target.value)}
-                  placeholder="Minimum 6 characters"
+                  placeholder="Minimum 12 characters"
+                  minLength={12}
                   required
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500/20 text-slate-800"
                 />
               </div>
 
+              {newStaffRole !== 'responder' ? (
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Department</label>
                 <select
@@ -417,16 +409,33 @@ export const AdminConsole: React.FC = () => {
                   ))}
                 </select>
               </div>
+              ) : (
+              <div>
+                <label htmlFor="new-responder-type" className="block font-semibold text-slate-700 mb-1">Responder type</label>
+                <select id="new-responder-type" value={newResponderType} onChange={(e) => setNewResponderType(e.target.value as 'medical' | 'security')}
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium">
+                  <option value="medical">Medical</option>
+                  <option value="security">Security</option>
+                </select>
+              </div>
+              )}
+
+              <div>
+                <label htmlFor="new-staff-phone" className="block font-semibold text-slate-700 mb-1">Alert phone (optional; needed for SMS/voice alerts)</label>
+                <input id="new-staff-phone" type="tel" value={newStaffPhone} onChange={(e) => setNewStaffPhone(e.target.value)} placeholder="+91 98765 43210"
+                  className="w-full px-3 py-2 rounded-lg border border-slate-300 text-slate-800" />
+              </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Role Type</label>
                 <select
                   value={newStaffRole}
-                  onChange={(e) => setNewStaffRole(e.target.value as 'staff' | 'admin')}
+                  onChange={(e) => setNewStaffRole(e.target.value as 'staff' | 'admin' | 'responder')}
                   className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 font-medium"
                 >
                   <option value="staff">Facilities Staff Member</option>
                   <option value="admin">System Administrator</option>
+                  <option value="responder">Medical / Security Responder</option>
                 </select>
               </div>
 

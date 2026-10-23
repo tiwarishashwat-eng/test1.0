@@ -24,7 +24,8 @@ import {
   TICKET_CATEGORIES,
   TICKET_STATUSES,
   DEPARTMENTS,
-  Department
+  Department,
+  PRIORITY_LEVELS
 } from '../../shared/types.js';
 import { CategoryBadge } from '../common/CategoryBadge.js';
 import { StatusBadge } from '../common/StatusBadge.js';
@@ -32,6 +33,9 @@ import { StaffMetrics } from './StaffMetrics.js';
 import { TicketDetailModal } from './TicketDetailModal.js';
 import { apiClient } from '../../services/apiClient.js';
 import { useAuth } from '../../context/AuthContext.js';
+import { IncidentPanel } from './IncidentPanel.js';
+import { StaffInsights } from './StaffInsights.js';
+import { PriorityBadge } from '../common/PriorityBadge.js';
 
 interface StaffDashboardProps {
   onOpenDemoGuide: () => void;
@@ -57,8 +61,11 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
       'Plumbing': 0,
       'Electricity': 0,
       'Cleanliness': 0,
-      'Internet Connectivity': 0
-    }
+      'Internet Connectivity': 0,
+      'Other': 0
+    },
+    byPriority: { Low: 0, Medium: 0, High: 0, Critical: 0 },
+    overdue: 0
   });
 
   // Filter state
@@ -67,6 +74,12 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
   const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
   const [departmentFilter, setDepartmentFilter] = useState<string>('ALL');
   const [buildingFilter, setBuildingFilter] = useState<string>('ALL');
+  const [priorityFilter, setPriorityFilter] = useState<string>('ALL');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'priority' | 'deadline'>('newest');
+  const [view, setView] = useState<'tickets' | 'insights'>('tickets');
+  const [incidentRefreshKey, setIncidentRefreshKey] = useState(0);
 
   // UI state
   const [isLoading, setIsLoading] = useState(true);
@@ -89,7 +102,11 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
         status: statusFilter,
         category: categoryFilter,
         department: departmentFilter,
-        building: buildingFilter
+        building: buildingFilter.trim() || 'ALL',
+        priority: priorityFilter,
+        from: dateFrom || undefined,
+        to: dateTo || undefined,
+        sort: sortBy
       });
 
       if (res.success) {
@@ -107,7 +124,7 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
 
   useEffect(() => {
     fetchTickets();
-  }, [user, statusFilter, categoryFilter, departmentFilter, buildingFilter]);
+  }, [user, statusFilter, categoryFilter, departmentFilter, priorityFilter, dateFrom, dateTo, sortBy]);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -119,6 +136,7 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
       prev.map((t) => (t.id === updatedTicket.id ? updatedTicket : t))
     );
     setSelectedTicket(updatedTicket);
+    setIncidentRefreshKey((k) => k + 1);
     fetchTickets();
   };
 
@@ -190,6 +208,40 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
         </div>
       </div>
 
+      {/* Recurring-issue clusters and linked incidents (shown first) */}
+      <IncidentPanel
+        refreshKey={incidentRefreshKey}
+        onOpenTicket={(id) => {
+          apiClient
+            .getTicketById(id)
+            .then((res) => {
+              if (res.ticket) setSelectedTicket(res.ticket as Ticket);
+            })
+            .catch(() => undefined);
+        }}
+        onChanged={fetchTickets}
+      />
+
+      <div role="tablist" aria-label="Dashboard sections" className="flex gap-2">
+        {(['tickets', 'insights'] as const).map((v) => (
+          <button
+            key={v}
+            role="tab"
+            aria-selected={view === v}
+            onClick={() => setView(v)}
+            className={`px-4 py-1.5 rounded-xl text-xs font-bold border cursor-pointer ${
+              view === v ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+            }`}
+          >
+            {v === 'tickets' ? 'Tickets' : 'Insights'}
+          </button>
+        ))}
+      </div>
+
+      {view === 'insights' ? (
+        <StaffInsights />
+      ) : (
+      <>
       {/* Metrics Cards from real persistent records */}
       <StaffMetrics
         stats={stats}
@@ -251,6 +303,53 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
             </select>
           </div>
         </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-xs">
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Building
+            <input
+              value={buildingFilter === 'ALL' ? '' : buildingFilter}
+              onChange={(e) => setBuildingFilter(e.target.value || 'ALL')}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') fetchTickets();
+              }}
+              placeholder="Any (press Enter)"
+              className="px-3 py-2 rounded-xl border border-slate-300 font-normal text-slate-800"
+            />
+          </label>
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Priority
+            <select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white font-normal text-slate-800">
+              <option value="ALL">All priorities</option>
+              {PRIORITY_LEVELS.map((p) => (
+                <option key={p} value={p}>
+                  {p} ({stats.byPriority?.[p] ?? 0} open)
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            From
+            <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 font-normal text-slate-800" />
+          </label>
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            To
+            <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="px-3 py-2 rounded-xl border border-slate-300 font-normal text-slate-800" />
+          </label>
+          <label className="flex flex-col gap-1 font-semibold text-slate-600">
+            Sort
+            <select value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)} className="px-3 py-2 rounded-xl border border-slate-300 bg-white font-normal text-slate-800">
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+              <option value="priority">Highest priority</option>
+              <option value="deadline">Nearest SLA deadline</option>
+            </select>
+          </label>
+        </div>
+        {stats.overdue > 0 && (
+          <p className="text-xs font-semibold text-rose-700" role="status">
+            {stats.overdue} open ticket(s) are past their SLA deadline.
+          </p>
+        )}
       </div>
 
       {/* Tickets List Table */}
@@ -285,6 +384,10 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
                 setStatusFilter('ALL');
                 setCategoryFilter('ALL');
                 setDepartmentFilter('ALL');
+                setBuildingFilter('ALL');
+                setPriorityFilter('ALL');
+                setDateFrom('');
+                setDateTo('');
                 setSearchQuery('');
               }}
               className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 cursor-pointer"
@@ -326,13 +429,17 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
                           {isHazard && (
                             <span
                               title={t.aiAnalysis?.isAiFallback ? 'Possible safety hazard (keyword rules)' : 'Possible safety hazard (AI suggestion)'}
-                              className="w-2 h-2 rounded-full bg-rose-500 animate-pulse"
-                            />
+                              aria-label="Possible safety hazard"
+                              className="text-[9px] font-bold uppercase px-1 rounded bg-rose-100 text-rose-800 border border-rose-300"
+                            >
+                              Hazard?
+                            </span>
                           )}
                         </div>
                         <span className="text-[10px] text-slate-400 block font-mono">
-                          {new Date(t.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          {new Date(t.createdAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                         </span>
+                        <PriorityBadge ticket={t} />
                       </td>
 
                       {/* Category */}
@@ -410,6 +517,9 @@ export const StaffDashboard: React.FC<StaffDashboardProps> = ({
           </div>
         )}
       </div>
+
+      </>
+      )}
 
       {/* Ticket Details Modal */}
       {selectedTicket && (

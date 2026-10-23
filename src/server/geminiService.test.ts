@@ -88,7 +88,8 @@ async function runTestSuite() {
     'Plumbing': 'Plumbing Maintenance Department',
     'Electricity': 'Electrical Systems & Safety Division',
     'Cleanliness': 'Campus Custodial & Sanitation Services',
-    'Internet Connectivity': 'IT & Network Infrastructure Team'
+    'Internet Connectivity': 'IT & Network Infrastructure Team',
+    'Other': 'General Facilities Services'
   };
 
   for (const [cat, expectedDept] of Object.entries(expectedRoutings)) {

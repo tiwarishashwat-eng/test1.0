@@ -21,6 +21,7 @@ import { StatusBadge } from '../common/StatusBadge.js';
 import { apiClient } from '../../services/apiClient.js';
 import { useAuth } from '../../context/AuthContext.js';
 import { aiSourceTitle } from '../../shared/aiLabels.js';
+import { StudentTicketExtras } from './StudentTicketExtras.js';
 
 interface TicketTrackerProps {
   initialTicketId?: string;
@@ -174,7 +175,7 @@ export const TicketTracker: React.FC<TicketTrackerProps> = ({
         </form>
 
         {errorMessage && (
-          <div className="max-w-xl mx-auto mt-4 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
+          <div role="alert" className="max-w-xl mx-auto mt-4 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2">
             <AlertCircle size={16} className="shrink-0 text-rose-600" />
             <span>{errorMessage}</span>
           </div>
@@ -212,6 +213,8 @@ export const TicketTracker: React.FC<TicketTrackerProps> = ({
               <span>Refresh Status</span>
             </button>
           </div>
+
+          <StudentTicketExtras ticket={currentTicket} onTicketUpdated={setCurrentTicket} />
 
           {/* Interactive Progress Timeline (5 Stages) */}
           <div className="space-y-4 py-2">
